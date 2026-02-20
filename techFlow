@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tempo Tier 1 Troubleshooter</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React and Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Vanilla Lucide -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        /* Hide scrollbars but keep functionality */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-slate-100 font-sans">
+    <div id="root"></div>
+
+    <!-- Firebase SDK Compat Scripts -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // --- FIREBASE CONFIGURATION ---
+        // Provided by environment or manually entered for deployment
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "",
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
+        };
+
+        // Initialize Firebase
+        let auth = null;
+        let db = null;
+        if (firebaseConfig.apiKey) {
+            if (!firebase.apps.length) {
+                firebase.initializeApp(firebaseConfig);
+            }
+            auth = firebase.auth();
+            db = firebase.firestore();
+        }
+
+        // --- Custom Icon Component (Stable vanilla Lucide wrapper) ---
+        const Icon = ({ name, size = 16, className = "" }) => {
+            const iconSvg = useMemo(() => {
+                if (window.lucide && window.lucide.icons[name]) {
+                    return window.lucide.icons[name].toSvg({ 
+                        width: size, 
+                        height: size,
+                        'stroke-width': 2.5
+                    });
+                }
+                return "";
+            }, [name, size]);
+
+            if (!iconSvg) return <span className="w-4 h-4 bg-slate-200 rounded animate-pulse inline-block" />;
+            return <span className={`inline-flex items-center justify-center ${className}`} dangerouslySetInnerHTML={{ __html: iconSvg }} />;
+        };
+
+        // --- Helper: Copy Button ---
+        const CopyButton = ({ text, label }) => {
+            const [copied, setCopied] = useState(false);
+            const handleCopy = () => {
+                // Compatibility fallback for clipboard
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(() => {
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                    });
+                } else {
+                    const textArea = document.createElement("textarea");
+                    textArea.value = text;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                }
+            };
+            return (
+                <button 
+                    onClick={handleCopy} 
+                    className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded transition-all active:scale-95 ${
+                        copied 
+                        ? 'bg-green-500 text-white shadow-green-200' 
+                        : 'bg-slate-100 text-slate-700 border border-slate-300 hover:bg-slate-200 shadow-sm'
+                    }`}
+                >
+                    <Icon name={copied ? "check" : "copy"} size={14} />
+                    {copied ? 'Copied!' : label || 'Copy'}
+                </button>
+            );
+        };
+
+        const NOTE_TEMPLATE = `🪪 | Unit Serial Number: \n🧬 | Issue Type: \n📝 | Issue Summary: \n🛟 | References Used: \n🗒️ | Additional Notes: N/A`;
+
+        const FLOW_DATA = {
+            start: {
+                id: 'start',
+                title: 'Main SOP Menu',
+                content: (
+                    <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-4 rounded-r-lg shadow-sm">
+                        <p className="font-black text-red-700 uppercase tracking-widest text-xs mb-1">Critical Requirement</p>
+                        <p className="text-red-600 text-sm font-semibold leading-snug">You MUST obtain and record the member's Unit Serial Number in their profile before closing this interaction.</p>
+                    </div>
+                ),
+                options: [
+                    { label: 'How to Obtain Serial Number', next: 'sn_importance', icon: 'hash' },
+                    { label: 'Technical Support Handoff Guide', next: 'handoff_menu', icon: 'user-check' },
+                    { label: 'Various Error Messages (Reg/Login/Workout)', next: 'various_errors_main', icon: 'list-checks' },
+                    { label: '3D Sensor Issues', next: 'sensor_menu', icon: 'activity' },
+                    { label: 'Network Issues (Buffering / Wi-Fi)', next: 'network_main', icon: 'wifi' },
+                    { label: 'Boot/Screen Issues (BIOS/Sideways)', next: 'boot_menu', icon: 'monitor' },
+                    { label: 'Heart Rate Monitor Issues', next: 'hrm_menu', icon: 'heart' },
+                    { label: 'Studio Sound (Speakers/Fans)', next: 'audio_step_1_video', icon: 'volume-2' },
+                    { label: 'Intermittent Shutdown / PCI-E', next: 'shutdown_menu', icon: 'power-off' },
+                    { label: 'Bluetooth Issues', next: 'bluetooth_menu', icon: 'bluetooth' },
+                    { label: 'Tempo Move & Core Issues', next: 'move_menu', icon: 'smartphone-nfc' },
+                ]
+            },
+
+            // =========================================================================
+            // HANDOFF GUIDE FLOW
+            // =========================================================================
+            handoff_menu: {
+                id: 'handoff_menu',
+                title: 'Technical Support Handoff',
+                content: 'Categorize the symptom based on severity to determine the correct escalation path:',
+                options: [
+                    { label: 'Critical Symptoms (Severe)', next: 'handoff_critical', icon: 'alert-triangle' },
+                    { label: 'Soft Symptoms (Recoverable)', next: 'handoff_soft_start', icon: 'info' },
+                    { label: 'Live Interaction Escalation Protocol', next: 'handoff_live_escalation', icon: 'phone' },
+                ]
+            },
+            handoff_critical: {
+                id: 'handoff_critical',
+                title: 'Critical Symptom Identified',
+                content: 'Severe hardware/display failures. Standard troubleshooting is unlikely to resolve. Advise scheduling a video call specialists.',
+                options: [{ label: 'Proceed to Support Scheduling', next: 'sensor_schedule_call' }]
+            },
+            handoff_soft_start: {
+                id: 'handoff_soft_start',
+                title: 'Soft Symptom Definitions',
+                content: (
+                    <div className="space-y-6 text-slate-700">
+                        <div className="grid grid-cols-1 gap-4">
+                            <div className="bg-blue-50 p-4 rounded-xl border border-blue-200 shadow-sm">
+                                <h4 className="font-black text-blue-800 uppercase tracking-tighter mb-1 text-sm">Tempo Stuck After Logo Appears</h4>
+                                <p className="text-xs text-blue-900 leading-relaxed italic">The Tempo device displays the logo during boot-up but does not proceed past it.</p>
+                            </div>
+                            <div className="bg-blue-50 p-4 rounded-xl border border-blue-200 shadow-sm">
+                                <h4 className="font-black text-blue-800 uppercase tracking-tighter mb-1 text-sm">Screen Glitches, Artifacts, or Anomalies</h4>
+                                <p className="text-xs text-blue-900 leading-relaxed italic">Displays vertical/horizontal lines, flickering, color distortion, ghosting, or static.</p>
+                            </div>
+                        </div>
+                        <p className="font-bold text-center">Action: Instruct member to perform a hard restart (10s reset) before escalating.</p>
+                    </div>
+                ),
+                options: [{ label: 'Perform Power Cycle Steps', next: 'sensor_pwr_step1' }]
+            },
+            handoff_live_escalation: {
+                id: 'handoff_live_escalation',
+                title: 'Expedited Support (Live)',
+                content: 'Open Slack, create HIP in #mx-Support-Egypt, tag @techsme. Request immediate assessment for live interaction.',
+                options: [{ label: 'HIP Tagged & SME Consulted', next: 'finish_snooze' }]
+            },
+
+            // =========================================================================
+            // VARIOUS ERRORS FLOW
+            // =========================================================================
+            various_errors_main: {
+                id: 'various_errors_main',
+                title: 'Error Message Troubleshooting',
+                content: 'Identify the specific error message reported by the member:',
+                options: [
+                    { label: 'Factory Registration Error', next: 'err_factory_reg' },
+                    { label: 'Failed to start a class', next: 'err_start_class_v1' },
+                    { label: 'Failed to update / Continuous Update', next: 'err_update_v1' },
+                    { label: 'Unable to login (Online)', next: 'err_login' },
+                    { label: 'Unsupported region', next: 'err_region' },
+                    { label: 'Workout/Program incomplete', next: 'err_incomplete_v1' },
+                    { label: 'Zoomed-in display', next: 'err_zoomed' },
+                ]
+            },
+            err_factory_reg: {
+                id: 'err_factory_reg',
+                title: 'Factory Registration',
+                content: 'Hard drive likely disabled or registration missing. Inform member we are investigating. Raise HIP in #mx-Support-Egypt & tag @techsme.',
+                options: [{ label: 'HIP Logged & Snoozed', next: 'finish_snooze' }]
+            },
+            err_start_class_v1: {
+                id: 'err_start_class_v1',
+                title: 'Start Class: Performance Reset',
+                content: '1. Confirm email address. 2. Log into Retool (User Performance Data Reset). 3. Click "Reset Performance Data".',
+                options: [{ label: 'Data Reset Done', next: 'err_start_class_v2' }]
+            },
+            err_start_class_v2: {
+                id: 'err_start_class_v2',
+                title: 'Start Class: Login Refresh',
+                content: 'Instruct member to Log Out (Settings gear) and Log back in.',
+                options: [{ label: 'Resolved (Resolve)', next: 'finish_resolve' }, { label: 'Issue Persists (Check Bands)', next: 'net_live_bands' }]
+            },
+            err_update_v1: {
+                id: 'err_update_v1',
+                title: 'Update Behavior Verification',
+                content: 'Check About page version vs Slack #eng-releases. If outdated, log into Retool Devices and search Serial Number.',
+                options: [
+                    { label: 'Version is current (Resolve)', next: 'finish_resolve' },
+                    { label: 'Outdated: Enable Update in Retool', next: 'err_update_v2' }
+                ]
+            },
+            err_update_v2: {
+                id: 'err_update_v2',
+                title: 'Retool: Enable Update',
+                content: 'Click Edit -> Toggle "Can Receive Update?" to ON. Instruct member to restart unit.',
+                options: [{ label: 'Enabled & Restarted', next: 'finish_resolve' }, { label: 'Persists', next: 'net_unable_workaround' }]
+            },
+            err_login: {
+                id: 'err_login',
+                title: 'Login Failure (Online)',
+                content: 'Device online but login fails. Instruct member to enable "Allow Remote Access" via Support button and escalate.',
+                options: [{ label: 'Remote Enabled', next: 'finish_escalate' }]
+            },
+            err_region: {
+                id: 'err_region',
+                title: 'Unsupported Region',
+                content: 'Tempo is US-only. Suggest VPN or US-based card. Otherwise, unit will not function.',
+                options: [{ label: 'Advice Given', next: 'finish_resolve' }]
+            },
+            err_incomplete_v1: {
+                id: 'err_incomplete_v1',
+                title: 'Workout Incomplete',
+                content: 'Collect Email, Class, Calories, and Score. Use Retool (Live/Users) -> Workouts -> Highlight -> Mark Complete.',
+                options: [{ label: 'Workout Fixed (Resolve)', next: 'finish_resolve' }]
+            },
+            err_zoomed: {
+                id: 'err_zoomed',
+                title: 'Zoomed-In Display',
+                content: 'Perform 10s soft reset. If fails, request Remote Access and raise HIP in Slack.',
+                options: [{ label: 'Fixed', next: 'finish_resolve' }, { label: 'Fails (HIP SME)', next: 'finish_snooze' }]
+            },
+
+            // =========================================================================
+            // NETWORK FLOW
+            // =========================================================================
+            network_main: {
+                id: 'network_main',
+                title: 'Network Issue',
+                content: 'Select interaction type:',
+                options: [
+                    { label: 'Buffering (Email Path)', next: 'net_email_steps' },
+                    { label: 'Buffering (Live Path)', next: 'net_live_steps' },
+                    { label: 'Unable to connect to Wi-Fi', next: 'net_schedule' }
+                ]
+            },
+            net_email_steps: {
+                id: 'net_email_steps',
+                title: 'Email: Buffering',
+                content: 'Send instructions for Speed Check, Power Cycle, DNS Switch, and Band Adjustment. Mark Done.',
+                options: [
+                    { label: 'Instructions Sent (Resolve)', next: 'finish_resolve' },
+                    { label: 'Member Replied: Still Persists', next: 'net_remote_access_confirm' }
+                ]
+            },
+            net_live_steps: {
+                id: 'net_live_steps',
+                title: 'Live: Buffering',
+                content: '1. Check speed (min 15-20). 2. Power Cycle unit/modem. 3. Switch DNS. 4. Switch bands (2.4 vs 5GHz).',
+                options: [
+                    { label: 'Issue Resolved (Resolve)', next: 'finish_resolve' },
+                    { label: 'Issue Persists (Escalate)', next: 'net_remote_access_confirm' }
+                ]
+            },
+            net_remote_access_confirm: {
+                id: 'net_remote_access_confirm',
+                title: 'Action: Remote Access',
+                content: 'Instruct member: "Allow Remote Access" via the Support button. Proceed to escalate to Tier 2.',
+                options: [{ label: 'Remote Enabled & Escalated', next: 'finish_escalate' }]
+            },
+            net_schedule: {
+                id: 'net_schedule',
+                title: 'Schedule Network Support',
+                content: 'Provide support link and suggest hotspot/ethernet workaround. Encourage In-App classes.',
+                options: [{ label: 'Done', next: 'finish_escalate' }]
+            },
+            net_unable_workaround: {
+                id: 'net_unable_workaround',
+                title: 'Network Workarounds',
+                content: 'Suggest connecting via Mobile Hotspot or switching to wired Ethernet if accessible.',
+                options: [{ label: 'Workarounds Shared', next: 'finish_resolve' }]
+            },
+
+            // =========================================================================
+            // SENSOR / POWER FLOW
+            // =========================================================================
+            sensor_menu: {
+                id: 'sensor_menu',
+                title: '3D Sensor Issue',
+                content: 'Identify status:',
+                options: [
+                    { label: '"Could not connect" Error', next: 'sensor_pwr_step1' },
+                    { label: 'Intermittent Connection', next: 'sensor_intermittent' },
+                    { label: 'Rep/Form Inaccuracy', next: 'sensor_reps' },
+                ]
+            },
+            sensor_pwr_step1: {
+                id: 'sensor_pwr_step1',
+                title: '1. Hard Reset',
+                content: 'Unplug Tempo Studio completely from the wall outlet.',
+                options: [{ label: 'Unplugged', next: 'sensor_pwr_step2' }]
+            },
+            sensor_pwr_step2: {
+                id: 'sensor_pwr_step2',
+                title: '2. 10-Second Reset',
+                content: 'Hold power button for 10 seconds while unplugged.',
+                options: [{ label: 'Hold Done', next: 'sensor_pwr_step3' }]
+            },
+            sensor_pwr_step3: {
+                id: 'sensor_pwr_step3',
+                title: '3. Power On',
+                content: 'Replug and check error.',
+                options: [
+                    { label: 'Fixed (Resolve Interaction)', next: 'finish_resolve' }, 
+                    { label: 'Persists (Check Queue)', next: 'handoff_queue_check' },
+                    { label: 'Critical Path', next: 'sensor_schedule_call' }
+                ]
+            },
+            sensor_schedule_call: {
+                id: 'sensor_schedule_call',
+                title: 'Action: Escalate to Support',
+                content: 'Provide link: https://talktotempo.as.me/studiosupport. Deliver parts if needed in 3-5 business days.',
+                action: { text: 'Assign ticket to Product Support', type: 'escalate' },
+                options: [{ label: 'Escalated', next: 'finish_escalate' }]
+            },
+            sensor_intermittent: {
+                id: 'sensor_intermittent',
+                title: 'Intermittent Sensor',
+                content: 'Check tech queue. HIP @techsme in #mx-support-egypt or schedule call.',
+                options: [
+                    { label: 'HIP Logged', next: 'finish_snooze' },
+                    { label: 'No SME (Schedule)', next: 'finish_escalate' }
+                ]
+            },
+            sensor_reps: {
+                id: 'sensor_reps',
+                title: 'Rep Inaccuracy',
+                content: 'Clear area, check lighting, soft reset, remove film. Check Trane status.',
+                options: [{ label: 'Fixed', next: 'finish_resolve' }, { label: 'Fails (Check Trane)', next: 'sensor_check_trane' }]
+            },
+            sensor_check_trane: {
+                id: 'sensor_check_trane',
+                title: 'Trane Verification',
+                content: 'Is exercise "Experimental" in Retool Trane?',
+                options: [
+                    { label: 'Yes (Educate member)', next: 'finish_resolve' },
+                    { label: 'No (Escalate)', next: 'finish_escalate' }
+                ]
+            },
+
+            // =========================================================================
+            // SERIAL NUMBER FLOW
+            // =========================================================================
+            sn_importance: {
+                id: 'sn_importance',
+                title: 'Serial Number Retrieval',
+                content: 'Search: Papi, Superset, or Shopify main order. Or request photo.',
+                options: [
+                    { label: 'Found SN in Backend', next: 'sn_freshchat' },
+                    { label: 'Request Photo from Member', next: 'sn_method_sticker' }
+                ]
+            },
+            sn_method_sticker: {
+                id: 'sn_method_sticker',
+                title: 'Sticker Photo Request',
+                content: 'Direct member to sticker behind unit, above power cord.',
+                options: [{ label: 'Photo Provided', next: 'sn_freshchat' }]
+            },
+            sn_freshchat: {
+                id: 'sn_freshchat',
+                title: 'Update Profile',
+                content: 'Edit Contact Info -> Input SN -> Update.',
+                options: [{ label: 'Record Updated', next: 'finish_resolve' }]
+            },
+
+            // =========================================================================
+            // LOGISTICS / SHIPPING NODES (3-5 DAYS)
+            // =========================================================================
+            boot_bios_ship: {
+                id: 'boot_bios_ship',
+                title: 'Ship Hard Drive',
+                content: (
+                    <div className="space-y-4">
+                        <ol className="list-decimal pl-5 space-y-1 text-slate-700">
+                            <li>Submit MX Shipping Form (Hard Drive).</li>
+                            <li>Confirm address with member.</li>
+                            <li>Advise 3-5 business days delivery.</li>
+                        </ol>
+                    </div>
+                ),
+                options: [{ label: 'Handoff to T2', next: 'finish_escalate' }]
+            },
+
+            // =========================================================================
+            // STUDIO SOUND FLOW
+            // =========================================================================
+            audio_step_1_video: {
+                id: 'audio_step_1_video',
+                title: 'Sound Step 1: Video Request',
+                content: 'Ask for video capturing noise and origin (top vs bottom).',
+                options: [
+                    { label: 'Video Received', next: 'audio_symptom', icon: 'video' },
+                    { label: 'Waiting (Snooze)', next: 'finish_snooze' }
+                ]
+            },
+            audio_symptom: {
+                id: 'audio_symptom',
+                title: 'Sound Step 2: Symptom Type',
+                content: 'Review video noise characteristic:',
+                options: [
+                    { label: 'Fluttering / Loud Fan', next: 'audio_logistics' },
+                    { label: 'Silent / No Audio', next: 'audio_silent' }
+                ]
+            },
+            audio_silent: {
+                id: 'audio_silent',
+                title: 'Silent Path',
+                content: 'Check Volume slider in class and BT Speakers output setting.',
+                options: [{ label: 'Fixed (Resolve)', next: 'finish_resolve' }, { label: 'Failed (HIP SME)', next: 'audio_hip' }]
+            },
+            audio_logistics: {
+                id: 'audio_logistics',
+                title: 'Sound: Logistics',
+                content: 'Confirm address. Parts delivered in 3-5 business days. Schedule video install call.',
+                options: [{ label: 'Confirm logistics', next: 'audio_hip' }]
+            },
+            audio_hip: {
+                id: 'audio_hip',
+                title: 'Sound Step 4: Internal HIP',
+                content: 'Open Slack #mx-support-egypt. Create HIP with video attached. Tag @techsme.',
+                options: [{ label: 'Logged & Escalating', next: 'finish_escalate' }]
+            },
+
+            // =========================================================================
+            // TERMINAL NODES
+            // =========================================================================
+            finish_resolve: {
+                id: 'finish_resolve',
+                title: 'Interaction: Resolved',
+                content: (
+                    <div className="p-4 bg-green-50 border border-green-200 rounded-xl flex items-center gap-4">
+                        <Icon name="check-circle" size={32} className="text-green-500" />
+                        <div>
+                            <p className="font-black text-green-900 text-lg uppercase tracking-tighter">Done</p>
+                            <p className="text-green-700 text-sm mt-1">Mark ticket as resolved in Freshchat.</p>
+                        </div>
+                    </div>
+                ),
+                options: [{ label: 'New Interaction', next: 'start', icon: 'rotate-ccw' }]
+            },
+            finish_snooze: {
+                id: 'finish_snooze',
+                title: 'Interaction: Snoozed',
+                content: (
+                    <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-4">
+                        <Icon name="clock" size={32} className="text-blue-500" />
+                        <div>
+                            <p className="font-black text-blue-900 text-lg uppercase tracking-tighter">Snooze</p>
+                            <p className="text-blue-700 text-sm mt-1">Snooze for 24h (Waiting on response/internal).</p>
+                        </div>
+                    </div>
+                ),
+                options: [{ label: 'New Interaction', next: 'start', icon: 'rotate-ccw' }]
+            },
+            finish_escalate: {
+                id: 'finish_escalate',
+                title: 'Interaction: Escalated',
+                content: (
+                    <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl flex items-center gap-4">
+                        <Icon name="external-link" size={32} className="text-orange-500" />
+                        <div>
+                            <p className="font-black text-orange-900 text-lg uppercase tracking-tighter">Handoff</p>
+                            <p className="text-orange-700 text-sm mt-1">Assign ticket to Tier 2 Specialists.</p>
+                        </div>
+                    </div>
+                ),
+                options: [{ label: 'New Interaction', next: 'start', icon: 'rotate-ccw' }]
+            }
+        };
+
+        // --- Component: Analytics Dashboard ---
+        const AnalyticsDashboard = ({ data }) => {
+            const stats = useMemo(() => {
+                const counts = {};
+                if (FLOW_DATA.start.options) {
+                    FLOW_DATA.start.options.forEach(opt => counts[opt.label] = 0);
+                }
+                data.forEach(entry => { if (counts[entry.sop_label] !== undefined) counts[entry.sop_label]++; });
+                return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+            }, [data]);
+            const maxCount = Math.max(...stats.map(s => s[1]), 1);
+            return (
+                <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 shadow-sm"><p className="text-blue-600 text-[10px] font-black uppercase tracking-widest leading-none">Total Logs</p><p className="text-3xl font-black text-blue-900 mt-1">{data.length}</p></div>
+                        <div className="bg-green-50 p-4 rounded-lg border border-green-100 shadow-sm col-span-2"><p className="text-green-600 text-[10px] font-black uppercase tracking-widest leading-none">Primary Concerns</p><p className="text-xl font-black text-green-900 truncate mt-1">{stats[0]?.[0] || 'N/A'}</p></div>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+                        <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2 text-sm uppercase tracking-wider"><Icon name="bar-chart-3" /> SOP Usage Breakdown</h3>
+                        <div className="space-y-5">
+                            {stats.map(([label, count]) => (
+                                <div key={label} className="space-y-1.5">
+                                    <div className="flex justify-between text-[10px] font-black text-slate-400 uppercase tracking-widest"><span>{label}</span><span>{count}</span></div>
+                                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                        <div className="bg-blue-600 h-full rounded-full transition-all duration-1000" style={{ width: `${(count / maxCount) * 100}%` }} />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Main Component: App ---
+        function App() {
+            const [history, setHistory] = useState(['start']);
+            const [view, setView] = useState('tool');
+            const [analyticsData, setAnalyticsData] = useState([]);
+            const currentStepId = history[history.length - 1];
+            const step = FLOW_DATA[currentStepId] || FLOW_DATA.start;
+
+            useEffect(() => {
+                if (!db) return;
+                auth.signInAnonymously().catch(e => console.error("Auth:", e));
+                const unsubscribe = db.collection('sop_usage').onSnapshot(snap => {
+                    setAnalyticsData(snap.docs.map(doc => doc.data()));
+                }, err => console.error("Firestore:", err));
+                return () => unsubscribe();
+            }, []);
+
+            const handleNext = async (nextId, label) => {
+                if (currentStepId === 'start' && db) {
+                    db.collection('sop_usage').add({
+                        sop_label: label,
+                        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                }
+                setHistory(prev => [...prev, nextId]);
+            };
+
+            const handleBack = () => history.length > 1 && setHistory(prev => prev.slice(0, -1));
+
+            return (
+                <div className="min-h-screen p-4 md:p-8 flex flex-col items-center">
+                    <div className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col min-h-[680px] border border-slate-200">
+                        <header className="bg-slate-900 text-white p-6 flex flex-col md:flex-row justify-between items-center gap-4">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-blue-600 p-2 rounded-xl shadow-lg"><Icon name="monitor" size={24} /></div>
+                                <div><h1 className="text-xl font-black leading-none tracking-tight">TEMPO SUPPORT</h1><p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-1">Interactive Tier 1 Hub</p></div>
+                            </div>
+                            <div className="flex bg-slate-800 p-1 rounded-2xl shadow-inner border border-slate-700">
+                                <button onClick={() => setView('tool')} className={`px-5 py-1.5 rounded-xl text-xs font-black transition-all ${view === 'tool' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-white'}`}>TOOL</button>
+                                <button onClick={() => setView('analytics')} className={`px-5 py-1.5 rounded-xl text-xs font-black transition-all ${view === 'analytics' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-white'}`}>DATA</button>
+                            </div>
+                        </header>
+
+                        {view === 'tool' ? (
+                            <>
+                                <nav className="bg-slate-50 border-b border-slate-200 px-6 py-3 flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        {history.length > 1 && <button onClick={handleBack} className="text-slate-500 hover:text-slate-900 text-[10px] font-black uppercase flex items-center gap-1.5 transition-all active:scale-95"><Icon name="arrow-left" size={14}/> Back</button>}
+                                        <div className="h-4 w-px bg-slate-300 mx-1"></div>
+                                        <span className="text-blue-600 text-[10px] font-black uppercase tracking-wider leading-none">Step {history.length}</span>
+                                    </div>
+                                    <button onClick={() => setHistory(['start'])} className="text-slate-400 hover:text-red-500 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 leading-none transition-colors"><Icon name="rotate-ccw" size={14}/> Reset Flow</button>
+                                </nav>
+                                <main className="flex-grow p-6 md:p-8 overflow-y-auto no-scrollbar">
+                                    <div className="animate-fade-in">
+                                        <div className="flex items-center gap-3 mb-4">
+                                            <div className="w-2 h-2 rounded-full bg-blue-600 shadow-sm shadow-blue-200"></div>
+                                            <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">{step.title}</h2>
+                                        </div>
+                                        <div className="text-slate-700 mb-10 leading-relaxed font-semibold text-base whitespace-pre-wrap">{step.content}</div>
+                                        
+                                        {step.action && (
+                                            <div className="p-4 bg-amber-50 border-l-4 border-amber-400 rounded-r-2xl mb-10 flex items-start gap-4 shadow-sm">
+                                                <Icon name="alert-triangle" size={20} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                                                <div>
+                                                    <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest opacity-70 mb-1">Mandatory Interaction Step</p>
+                                                    <p className="text-sm font-black text-amber-950 leading-tight uppercase">{step.action.text}</p>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="space-y-3">
+                                            {step.options && step.options.map((option, index) => (
+                                                <button key={index} onClick={() => handleNext(option.next, option.label)} className="w-full text-left p-5 rounded-2xl border border-slate-200 hover:border-blue-500 hover:bg-blue-50 transition-all flex justify-between items-center group bg-white shadow-sm active:scale-[0.98] duration-75">
+                                                    <div className="flex items-center gap-5">
+                                                        <div className="p-2.5 rounded-xl bg-slate-50 group-hover:bg-blue-100 transition-colors shadow-inner border border-slate-100">
+                                                            <Icon name={option.icon || 'check'} size={18} className="text-slate-400 group-hover:text-blue-600" />
+                                                        </div>
+                                                        <span className="font-black text-slate-700 group-hover:text-blue-900 text-sm uppercase tracking-tighter leading-none">{option.label}</span>
+                                                    </div>
+                                                    <Icon name="chevron-right" size={20} className="text-slate-300 group-hover:text-blue-500 group-hover:translate-x-1 transition-all" />
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="mt-12 pt-8 border-t border-gray-200">
+                                        <div className="flex justify-between items-center mb-4"><h3 className="font-black text-slate-700 text-[10px] uppercase tracking-widest flex items-center gap-1.5 leading-none"><Icon name="file-text" size={14}/> Support Ticket Template</h3><CopyButton text={NOTE_TEMPLATE} /></div>
+                                        <pre className="text-[11px] text-slate-500 whitespace-pre-wrap bg-slate-50 p-5 rounded-2xl border border-slate-200 font-mono leading-relaxed shadow-inner">{NOTE_TEMPLATE}</pre>
+                                    </div>
+                                </main>
+                            </>
+                        ) : (
+                            <div className="p-8 flex-grow bg-slate-50/50 overflow-y-auto no-scrollbar">
+                                <div className="flex items-center justify-between mb-10 border-b border-slate-200 pb-6">
+                                    <h2 className="text-2xl font-black text-slate-900 tracking-tighter uppercase leading-none">Global Team Stats</h2>
+                                    <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 border border-green-200 shadow-sm animate-pulse">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div> Sync Active
+                                    </span>
+                                </div>
+                                <AnalyticsDashboard data={analyticsData} />
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+</html>
